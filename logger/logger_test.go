@@ -3,7 +3,6 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -43,7 +42,7 @@ func TestSetLogLevel(t *testing.T) {
 			if !tt.expectError && err != nil {
 				t.Errorf("unexpected error for level %q: %v", tt.level, err)
 			}
-			if !tt.expectError && atomicLevel.Level() != tt.expectedLvl {
+			if atomicLevel.Level() != tt.expectedLvl {
 				t.Errorf("expected level %v, got %v", tt.expectedLvl, atomicLevel.Level())
 			}
 		})
@@ -86,11 +85,10 @@ func TestInit(t *testing.T) {
 			atomicLevel.SetLevel(zapcore.InfoLevel)
 
 			if tt.envValue != "" {
-				os.Setenv("LOG_LEVEL", tt.envValue)
+				t.Setenv("LOG_LEVEL", tt.envValue)
 			} else {
-				os.Unsetenv("LOG_LEVEL")
+				t.Setenv("LOG_LEVEL", "")
 			}
-			defer os.Unsetenv("LOG_LEVEL")
 
 			Init()
 
@@ -105,8 +103,7 @@ func TestInitWithInvalidLevel(t *testing.T) {
 	// Reset to Info level
 	atomicLevel.SetLevel(zapcore.InfoLevel)
 
-	os.Setenv("LOG_LEVEL", "invalid_level")
-	defer os.Unsetenv("LOG_LEVEL")
+	t.Setenv("LOG_LEVEL", "invalid_level")
 
 	Init()
 
@@ -164,21 +161,52 @@ func TestLogOutput(t *testing.T) {
 		t.Error("expected error message in output")
 	}
 
-	// Verify JSON structure
+	// Verify JSON structure and fields for each log line
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
+
+	expectedEntries := []struct {
+		level  string
+		msg    string
+		fields map[string]interface{}
+	}{
+		{"debug", "debug message", map[string]interface{}{"key": "value"}},
+		{"info", "info message", map[string]interface{}{"count": float64(42)}},
+		{"warn", "warn message", nil},
+		{"error", "error message", nil},
+	}
+
+	if len(lines) != len(expectedEntries) {
+		t.Fatalf("expected %d log lines, got %d", len(expectedEntries), len(lines))
+	}
+
+	for i, line := range lines {
 		var logEntry map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
-			t.Errorf("failed to parse log line as JSON: %v", err)
+			t.Errorf("line %d: failed to parse log line as JSON: %v", i, err)
+			continue
 		}
 		if _, ok := logEntry["timestamp"]; !ok {
-			t.Error("expected 'timestamp' field in log output")
+			t.Errorf("line %d: expected 'timestamp' field in log output", i)
 		}
-		if _, ok := logEntry["level"]; !ok {
-			t.Error("expected 'level' field in log output")
+		if _, ok := logEntry["caller"]; !ok {
+			t.Errorf("line %d: expected 'caller' field in log output", i)
 		}
-		if _, ok := logEntry["msg"]; !ok {
-			t.Error("expected 'msg' field in log output")
+		if level, ok := logEntry["level"]; !ok {
+			t.Errorf("line %d: expected 'level' field in log output", i)
+		} else if level != expectedEntries[i].level {
+			t.Errorf("line %d: expected level %q, got %q", i, expectedEntries[i].level, level)
+		}
+		if msg, ok := logEntry["msg"]; !ok {
+			t.Errorf("line %d: expected 'msg' field in log output", i)
+		} else if msg != expectedEntries[i].msg {
+			t.Errorf("line %d: expected msg %q, got %q", i, expectedEntries[i].msg, msg)
+		}
+		for field, expectedVal := range expectedEntries[i].fields {
+			if val, ok := logEntry[field]; !ok {
+				t.Errorf("line %d: expected field %q in log output", i, field)
+			} else if val != expectedVal {
+				t.Errorf("line %d: expected field %q to be %v, got %v", i, field, expectedVal, val)
+			}
 		}
 	}
 }
